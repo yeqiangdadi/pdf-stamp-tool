@@ -16,9 +16,13 @@
 - **保留原文件**：结果另存为 `原名-已盖章.pdf`，原文件不动。
 - **保留文字层**：印章以图片层叠加，不栅格化原页面。
 
+## 下载
+
+不想装 Python 的话，到 [Releases](https://github.com/yeqiangdadi/pdf-stamp-tool/releases/latest) 下载 `PDFStampTool.exe`，双击即用（Windows 10/11，首次启动解包约 3-5 秒）。
+
 ## 运行
 
-需要 Python 3.9+。
+从源码运行需要 Python 3.9+。
 
 ```bash
 pip install -r requirements.txt
