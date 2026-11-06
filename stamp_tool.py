@@ -100,36 +100,74 @@ def crop_alpha(im):
     return im.crop(box)
 
 
-def find_stamp_in_pdf(path):
-    """在 PDF 内挑出最像印章的图片（红色占比高、接近方形、尺寸大）。"""
+def _overlap(a, b):
+    r = fitz.Rect(a)
+    r.intersect(b)
+    return 0.0 if r.is_empty else r.width * r.height
+
+
+def _stamp_region(page, box):
+    """把和印章重叠的图片、文字一起框进来，避免丢掉中间的签名或字。"""
+    region = fitz.Rect(box)
+    limit = region.get_area() * 4
+    boxes = [fitz.Rect(i["bbox"]) for i in page.get_image_info()]
+    for blk in page.get_text("dict").get("blocks", []):
+        boxes.append(fitz.Rect(blk["bbox"]))
+    for b in boxes:
+        if b.is_empty or b.get_area() > limit:
+            continue
+        if _overlap(region, b) >= 0.25 * b.get_area():
+            region.include_rect(b)
+    pad = max(4.0, 0.03 * max(region.width, region.height))
+    region = fitz.Rect(region.x0 - pad, region.y0 - pad,
+                       region.x1 + pad, region.y1 + pad)
+    region.intersect(page.rect)
+    return region
+
+
+def find_stamp_in_pdf(path, dpi=600):
+    """定位页面里最像印章的图片，再按该区域整块渲染取章（保留重叠的签名、文字）。"""
     doc = fitz.open(path)
-    best, best_score = None, -1.0
     try:
+        best, best_score = None, -1.0
         for pno in range(min(len(doc), 40)):
-            for img in doc[pno].get_images(full=True):
-                xref = img[0]
+            page = doc[pno]
+            for info in page.get_image_info(xrefs=True):
+                xref = info.get("xref") or 0
+                if xref <= 0:
+                    continue
+                box = fitz.Rect(info["bbox"])
+                if box.width < 60 or box.height < 60:
+                    continue
                 try:
-                    info = doc.extract_image(xref)
-                    im = Image.open(io.BytesIO(info["image"]))
-                    if im.width < 100 or im.height < 100:
-                        continue
-                    if im.mode not in ("RGB", "RGBA"):
-                        im = im.convert("RGB")
-                    w, h = im.size
-                    ar = w / h
-                    if not (0.55 < ar < 1.8):
-                        continue
-                    frac = red_ratio(im)
-                    if frac < 0.05:
-                        continue
-                    score = frac * math.sqrt(w * h)
-                    if score > best_score:
-                        best, best_score = im, score
+                    raw = doc.extract_image(xref)
+                    im = Image.open(io.BytesIO(raw["image"]))
                 except Exception:
                     continue
+                if im.width < 100 or im.height < 100:
+                    continue
+                if im.mode not in ("RGB", "RGBA"):
+                    im = im.convert("RGB")
+                if not (0.55 < im.width / im.height < 1.8):
+                    continue
+                frac = red_ratio(im)
+                if frac < 0.05:
+                    continue
+                score = frac * math.sqrt(im.width * im.height)
+                if score > best_score:
+                    best, best_score = (pno, box), score
+
+        if best is None:
+            return None
+        pno, box = best
+        page = doc[pno]
+        region = _stamp_region(page, box)
+        zoom = dpi / 72.0
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=region, alpha=False)
+        im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        return crop_alpha(to_rgba(im))
     finally:
         doc.close()
-    return best
 
 
 def parse_pages(text, total):
