@@ -39,6 +39,28 @@ def mm2pt(v):
     return v / 25.4 * 72.0
 
 
+POSITIONS = ["右下", "中下", "左下", "右上", "左上", "自定义"]
+
+
+def place_rect(pw, ph, w, h, corner, margin, cx=0.0, cy=0.0):
+    """返回印章左上角坐标，单位与传入的页面尺寸一致。"""
+    if corner == "自定义":
+        x, y = cx, cy
+    elif corner == "右下":
+        x, y = pw - margin - w, ph - margin - h
+    elif corner == "中下":
+        x, y = (pw - w) / 2.0, ph - margin - h
+    elif corner == "左下":
+        x, y = margin, ph - margin - h
+    elif corner == "右上":
+        x, y = pw - margin - w, margin
+    else:
+        x, y = margin, margin
+    x = min(max(0.0, x), max(0.0, pw - w))
+    y = min(max(0.0, y), max(0.0, ph - h))
+    return x, y
+
+
 def red_ratio(im):
     small = im.convert("RGB").resize((140, 140))
     a = np.asarray(small).astype(np.int16)
@@ -288,23 +310,57 @@ class App:
 
         label("位置", 2)
         self.corner_var = tk.StringVar(value="右下")
-        ttk.Combobox(grid, textvariable=self.corner_var, values=["右下", "左下", "右上", "左上"],
+        ttk.Combobox(grid, textvariable=self.corner_var, values=POSITIONS,
                      state="readonly", width=8).grid(row=2, column=1, sticky="w", padx=(14, 0), pady=5)
 
-        label("输出后缀", 3)
+        label("X / Y (mm)", 3)
+        xy = tk.Frame(grid, bg=CARD)
+        xy.grid(row=3, column=1, sticky="w", padx=(14, 0), pady=5)
+        self.cx_var = tk.StringVar(value="0")
+        self.cy_var = tk.StringVar(value="0")
+        self.cx_spin = ttk.Spinbox(xy, from_=0, to=500, increment=1,
+                                   textvariable=self.cx_var, width=6)
+        self.cx_spin.pack(side="left")
+        tk.Label(xy, text="/", bg=CARD, fg=MUTED, font=(FONT, 9)).pack(side="left", padx=6)
+        self.cy_spin = ttk.Spinbox(xy, from_=0, to=500, increment=1,
+                                   textvariable=self.cy_var, width=6)
+        self.cy_spin.pack(side="left")
+        self.xy_hint = tk.Label(xy, text="距页面左上角", bg=CARD, fg=MUTED, font=(FONT, 8))
+        self.xy_hint.pack(side="left", padx=(8, 0))
+
+        label("输出后缀", 4)
         self.suffix_var = tk.StringVar(value="-已盖章")
         tk.Entry(grid, textvariable=self.suffix_var, bg=CARD, fg=TEXT, relief="flat",
                  highlightbackground=BORDER, highlightthickness=1, font=(FONT, 9)).grid(
-            row=3, column=1, sticky="ew", padx=(14, 0), pady=5, ipady=4)
+            row=4, column=1, sticky="ew", padx=(14, 0), pady=5, ipady=4)
 
-        label("页码", 4)
+        label("页码", 5)
         self.pages_var = tk.StringVar(value="全部")
         tk.Entry(grid, textvariable=self.pages_var, bg=CARD, fg=TEXT, relief="flat",
                  highlightbackground=BORDER, highlightthickness=1, font=(FONT, 9)).grid(
-            row=4, column=1, sticky="ew", padx=(14, 0), pady=5, ipady=4)
+            row=5, column=1, sticky="ew", padx=(14, 0), pady=5, ipady=4)
 
-        for var in (self.size_var, self.margin_var, self.corner_var):
+        for var in (self.size_var, self.margin_var, self.corner_var,
+                    self.cx_var, self.cy_var):
             var.trace_add("write", lambda *a: self.refresh_preview())
+        self.corner_var.trace_add("write", lambda *a: self._on_corner())
+        self._on_corner()
+
+    def _on_corner(self):
+        custom = self.corner_var.get() == "自定义"
+        st = "normal" if custom else "disabled"
+        self.cx_spin.configure(state=st)
+        self.cy_spin.configure(state=st)
+        self.xy_hint.configure(text="距页面左上角" if custom else "选「自定义」后可调")
+
+    def _custom_mm(self):
+        try:
+            cx, cy = float(self.cx_var.get()), float(self.cy_var.get())
+        except ValueError:
+            raise ValueError("X / Y 坐标要填数字（毫米）。")
+        if not (0 <= cx <= 2000 and 0 <= cy <= 2000):
+            raise ValueError("X / Y 坐标超出范围（0-2000 mm）。")
+        return cx, cy
 
     def _build_files_card(self, parent):
         body = self.card(parent, "待盖章文件")
@@ -507,14 +563,16 @@ class App:
         try:
             size = mm2pt(float(self.size_var.get()))
             margin = mm2pt(float(self.margin_var.get()))
+            cx_mm, cy_mm = self._custom_mm()
         except ValueError:
             return
         corner = self.corner_var.get()
         w = int(round(size * zoom))
         h = int(round(size * zoom * self.stamp_base.height / self.stamp_base.width))
-        m = int(round(margin * zoom))
-        x = m if corner in ("左下", "左上") else bg_img.width - m - w
-        y = m if corner in ("右上", "左上") else bg_img.height - m - h
+        x, y = place_rect(bg_img.width, bg_img.height, w, h, corner,
+                          int(round(margin * zoom)),
+                          mm2pt(cx_mm) * zoom, mm2pt(cy_mm) * zoom)
+        x, y = int(round(x)), int(round(y))
 
         ink = self.stamp_base.copy()
         alpha = ink.getchannel("A").point(lambda v: int(v * self.opacity.get()))
@@ -541,8 +599,9 @@ class App:
             margin = float(self.margin_var.get())
             if not (10 <= size <= 100) or not (0 <= margin <= 60):
                 raise ValueError
-        except ValueError:
-            messagebox.showwarning(APP_NAME, "章径或边距数值不对。")
+            cx_mm, cy_mm = self._custom_mm()
+        except ValueError as e:
+            messagebox.showwarning(APP_NAME, str(e) if str(e) else "章径或边距数值不对。")
             return False
         if not self.suffix_var.get().strip():
             messagebox.showwarning(APP_NAME, "输出后缀不能为空，否则会覆盖原文件。")
@@ -579,6 +638,8 @@ class App:
         params = dict(size=mm2pt(float(self.size_var.get())),
                       margin=mm2pt(float(self.margin_var.get())),
                       corner=self.corner_var.get(),
+                      cx=mm2pt(float(self.cx_var.get())),
+                      cy=mm2pt(float(self.cy_var.get())),
                       suffix=self.suffix_var.get().strip(),
                       data=data)
 
@@ -603,15 +664,9 @@ class App:
                     r = page.rect
                     w = size
                     h = size * self.stamp_base.height / self.stamp_base.width
-                    if corner == "右下":
-                        x1, y1 = r.x1 - margin, r.y1 - margin
-                    elif corner == "左下":
-                        x1, y1 = r.x0 + margin + w, r.y1 - margin
-                    elif corner == "右上":
-                        x1, y1 = r.x1 - margin, r.y0 + margin + h
-                    else:
-                        x1, y1 = r.x0 + margin + w, r.y0 + margin + h
-                    rect = fitz.Rect(x1 - w, y1 - h, x1, y1)
+                    x, y = place_rect(r.width, r.height, w, h, corner, margin,
+                                      params["cx"], params["cy"])
+                    rect = fitz.Rect(x, y, x + w, y + h)
                     page.insert_image(rect, stream=params["data"], overlay=True)
                     self.queue.put(("tick", 1))
                 tmp = out + ".part"
@@ -675,6 +730,8 @@ class App:
             self.size_var.set(str(s.get("size", 40)))
             self.margin_var.set(str(s.get("margin", 8)))
             self.corner_var.set(s.get("corner", "右下"))
+            self.cx_var.set(str(s.get("cx", 0)))
+            self.cy_var.set(str(s.get("cy", 0)))
             self.suffix_var.set(s.get("suffix", "-已盖章"))
             self.opacity.set(float(s.get("opacity", 0.95)))
             self.opacity_lbl.configure(text="%d%%" % round(self.opacity.get() * 100))
@@ -686,7 +743,8 @@ class App:
             os.makedirs(SETTINGS_DIR, exist_ok=True)
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(dict(size=self.size_var.get(), margin=self.margin_var.get(),
-                               corner=self.corner_var.get(), suffix=self.suffix_var.get(),
+                               corner=self.corner_var.get(), cx=self.cx_var.get(),
+                               cy=self.cy_var.get(), suffix=self.suffix_var.get(),
                                opacity=round(self.opacity.get(), 2)), f, ensure_ascii=False, indent=2)
         except Exception:
             pass
